@@ -1,0 +1,42 @@
+{
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "./tests",
+        "-p",
+        "test_*.py",
+        "-t",
+        "."
+    ],
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.analysis.exclude": [
+        "**/__pycache__",
+        "**/.git",
+        "**/.hg",
+        "**/.svn",
+        "**/node_modules",
+        "**/.mypy_cache",
+        "**/.pytest_cache",
+        "**/.ruff_cache",
+        "**/.tox",
+        "**/.nox",
+        "**/.venv",
+        "**/venv",
+        "**/env",
+        "**/.env",
+        "**/dist",
+        "**/build",
+        "**/.*",
+        "data/**",
+        "models/**",
+        "logs/**",
+        "**/*.parquet",
+        "cdk/.venv/**",
+        "cdk/cdk.out/**",
+        "cdk/node_modules/**"
+    ],
+  "python.analysis.typeCheckingMode": "basic"
+
+}

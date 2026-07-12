@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "planequery-flights-algorithm"
+version = "0.1.0"
+description = "ADS-B to flights detection algorithm"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "joblib==1.5.3",
+    "lightgbm==4.6.0",
+    "numpy==2.5.1",
+    "orjson==3.11.9",
+    "polars==1.42.1",
+    "pyarrow==25.0.0",
+    "scikit-learn==1.9.0",
+    "scipy==1.18.0",
+    "timezonefinder==8.2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/planequery/flights-algorithm"
+Repository = "https://github.com/planequery/flights-algorithm"
+Issues = "https://github.com/planequery/flights-algorithm/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
