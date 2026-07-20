@@ -11,7 +11,7 @@ from data_engineering.flights.flight_type import add_flight_id_col, flights_df_t
 from datetime import date
 from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
 from flights.flights_comparison import df_flights_comparision
-from flights.flights_match_adsb import get_matching_icaos_in_flights
+from flights.flights_match_adsb import ADSB_MATCHING_COLUMNS, get_matching_icaos_in_flights
 from utils import angle_diff_deg, haversine, initial_bearing_deg, normalize_deg
 
 AIRPORT_RADIUS_KM = 150.0
@@ -54,7 +54,11 @@ def aircraft_category_to_int(category: str) -> int:
 def get_training_flights(dt: date):
     df_sfdps_flights = get_sfdps_flights_day(dt)
     df_sfdps_flights = df_sfdps_flights.filter(pia_or_american_ladd_icao_filter())
-    df_adsb = read_adsb(dt, icaos=df_sfdps_flights.get_column("icao").to_list())
+    df_adsb = read_adsb(
+        dt,
+        icaos=df_sfdps_flights.get_column("icao").drop_nulls().unique().to_list(),
+        columns=ADSB_MATCHING_COLUMNS,
+    )
     df_sfdps_flights = get_matching_icaos_in_flights(df_sfdps_flights, df_adsb)
     df_flights = get_flights(dt, no_airports_model=True)
     df = df_flights_comparision(df_flights, df_sfdps_flights, datetime(dt.year, dt.month, dt.day), datetime(dt.year, dt.month, dt.day) + timedelta(days=1), compare_airports=False)
@@ -187,7 +191,6 @@ def process_flights(
     df_flights = add_flight_id_col(df_flights)
     icaos = df_flights.get_column("icao").unique().to_list()
     df_adsb_full = df_adsb_full.filter(pl.col("icao").is_in(icaos))
-    assert len(df_flights) > 0, "No flights provided"
     flights = flights_df_to_flights(df_flights)
     X_rows = []
     Y_rows = []
@@ -218,7 +221,11 @@ def process_flights(
             airport_ident_rows.append(row[2])
             flight_id_rows.append(flight.flight_id)
 
-    X = np.asarray(X_rows, dtype=np.float64)
+    X = (
+        np.asarray(X_rows, dtype=np.float64)
+        if X_rows
+        else np.empty((0, len(FEATURE_NAMES)), dtype=np.float64)
+    )
     Y = np.asarray(Y_rows)
     flight_id_rows = np.asarray(flight_id_rows)
     airport_ident_rows = np.asarray(airport_ident_rows)

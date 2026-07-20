@@ -28,6 +28,7 @@ def train(training_dates, validation_date = date(2026,3,15)):
         str(path),
     )
     print(f"  -> saved to {path}")
+    return path
 
 if __name__ == "__main__":
     training_dates = [

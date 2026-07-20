@@ -6,7 +6,6 @@ import polars as pl
 from timezonefinder import TimezoneFinder
 from data_engineering.flights.flight_type import with_flight_schema_columns
 from airports.airport_lookup import AirportLookup
-from data_engineering.flights.flights_and_adsb_match import get_icaos_with_perfect_match
 from data_engineering.adsb.read_adsb import read_adsb
 from data_engineering.openairframes.read import scan_latest_faa_registration_icao_for_join
 from data_engineering.utils import OUTPUT_DIR

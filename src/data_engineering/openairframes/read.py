@@ -11,7 +11,8 @@ from data_engineering.utils import OUTPUT_DIR
 OPENAIRFRAMES_DIR = OUTPUT_DIR / "data" / "raw" / "openairframes"
 DEFAULT_OPENAIRFRAMES_ADSB_PATH = OPENAIRFRAMES_DIR / "openairframes_adsb_2024-01-01_2026-07-05.csv.gz"
 DEFAULT_OPENAIRFRAMES_ADSB_URL = (
-    "https://github.com/PlaneQuery/OpenAirframes/releases/latest/download/"
+    "https://github.com/PlaneQuery/OpenAirframes/releases/download/"
+    "openairframes-2026-07-10-main/"
     "openairframes_adsb_2024-01-01_2026-07-05.csv.gz"
 )
 DEFAULT_OPENAIRFRAMES_FAA_PATH = OPENAIRFRAMES_DIR / "openairframes_faa_2023-08-16_2026-07-10.csv"

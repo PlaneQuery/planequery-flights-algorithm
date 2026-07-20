@@ -37,6 +37,8 @@
         "cdk/cdk.out/**",
         "cdk/node_modules/**"
     ],
-  "python.analysis.typeCheckingMode": "basic"
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true
+
 
 }

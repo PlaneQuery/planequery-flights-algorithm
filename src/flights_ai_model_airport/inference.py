@@ -48,6 +48,16 @@ def score_airport_candidates(
         df_adsb_full,
         endpoint,
     )
+    if len(flight_ids) == 0:
+        return pl.DataFrame(
+            schema={
+                "flight_id": pl.String,
+                "airport_ident": pl.String,
+                "score": pl.Float64,
+                "endpoint": pl.String,
+                "rank": pl.UInt32,
+            }
+        )
 
     with warnings.catch_warnings(): # TODO: deal with.
         warnings.filterwarnings("ignore", message=".*does not have valid feature names.*")
@@ -89,7 +99,12 @@ def _join_endpoint_predictions(df_flights: pl.DataFrame, scores: pl.DataFrame, e
     return (
         df_flights
         .join(predictions, on="flight_id", how="left")
-        .with_columns(pl.col(f"_{endpoint}_airport_ident").alias(f"{endpoint}_airport_ident"))
+        .with_columns(
+            pl.coalesce(
+                f"_{endpoint}_airport_ident",
+                f"{endpoint}_airport_ident",
+            ).alias(f"{endpoint}_airport_ident")
+        )
         .drop(f"_{endpoint}_airport_ident")
     )
 
