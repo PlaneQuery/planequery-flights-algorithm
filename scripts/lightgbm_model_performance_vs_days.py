@@ -3,11 +3,11 @@ from datetime import date, timedelta, datetime
 import matplotlib.pyplot as plt
 import polars as pl
 
-from data_engineering.adsb.read_adsb import read_adsb
 from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
 from data_engineering.utils import OUTPUT_DIR
+from flights.evaluation.evaluation import read_adsb_for_matching
 from flights.flights_comparison import df_flights_comparision, df_flights_comparison_stats
-from flights.flights_match_adsb import ADSB_MATCHING_COLUMNS, get_matching_icaos_in_flights
+from flights.flights_match_adsb import get_matching_icaos_in_flights
 from flights_ai_model_airport.inference import run_inference
 from flights_ai_model_airport.train import train
 
@@ -27,12 +27,23 @@ for num_days in range(1, 16):
     path = train(training_dates)
     df_test = run_inference(test_date, model_path=path)
     df_sfdps_flights = get_sfdps_flights_day(test_date)
-    df_adsb = read_adsb(
+
+    same_day_expr = (
+        (pl.col("takeoff_time").dt.date() == test_date)
+        & (pl.col("landing_time").dt.date() == test_date)
+    )
+    df_test = df_test.filter(same_day_expr)
+    df_sfdps_flights = df_sfdps_flights.filter(same_day_expr)
+    df_adsb = read_adsb_for_matching(
+        df_sfdps_flights,
         test_date,
-        icaos=df_sfdps_flights.get_column("icao").drop_nulls().unique().to_list(),
-        columns=ADSB_MATCHING_COLUMNS,
+        adsb_src="adsbx",
+        pia_or_american_ladd_only=False,
     )
     df_gold = get_matching_icaos_in_flights(df_sfdps_flights, df_adsb)
+    df_test = df_test.filter(
+        pl.col("icao").is_in(df_gold.get_column("icao").implode())
+    )
     df = df_flights_comparision(df_test, df_gold, datetime(test_date.year, test_date.month, test_date.day), datetime(test_date.year, test_date.month, test_date.day) + timedelta(days=1), compare_airports=False)
     stats = df_flights_comparison_stats(df)
     rows.append({"num_training_days": num_days, "test_date": test_date.isoformat(), **stats})

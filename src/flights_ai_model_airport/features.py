@@ -6,7 +6,7 @@ import numpy as np
 from data_engineering.adsb.adsb_messages_types import AdsbMessage, adsb_messages_from_parquet_df
 from airports.airport_lookup import Airport, Airport_Size_Ranking, AirportLookup
 from data_engineering.adsb.read_adsb import read_adsb
-from data_engineering.flights.flight_type import FLIGHT_POLARS_SCHEMA, Flight, flights_df_to_flights, pia_or_american_ladd_icao_filter
+from data_engineering.flights.flight_type import FLIGHT_POLARS_SCHEMA, Flight, flights_df_to_flights
 from data_engineering.flights.flight_type import add_flight_id_col, flights_df_to_flights, get_flights
 from datetime import date
 from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
@@ -53,7 +53,6 @@ def aircraft_category_to_int(category: str) -> int:
 
 def get_training_flights(dt: date):
     df_sfdps_flights = get_sfdps_flights_day(dt)
-    df_sfdps_flights = df_sfdps_flights.filter(pia_or_american_ladd_icao_filter())
     df_adsb = read_adsb(
         dt,
         icaos=df_sfdps_flights.get_column("icao").drop_nulls().unique().to_list(),
@@ -163,7 +162,6 @@ def build_training_data(training_dates: list[date], endpoint: str = "takeoff"):
     for dt in training_dates:
         df_flights = get_training_flights(dt)
         df_flights = add_flight_id_col(df_flights)
-        df_flights = df_flights.filter(pia_or_american_ladd_icao_filter())
         icaos = df_flights.get_column("icao").unique().to_list()
         df_adsb_full = read_adsb(dt, icaos=icaos)
         X, Y, flight_id_rows, airport_ident_rows = process_flights(
