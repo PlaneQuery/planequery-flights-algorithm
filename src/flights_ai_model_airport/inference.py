@@ -7,7 +7,7 @@ import polars as pl
 import joblib
 from lightgbm import LGBMClassifier
 
-from data_engineering.flights.flight_type import add_flight_id_col, get_flights, pia_or_american_ladd_icao_filter
+from data_engineering.flights.flight_type import add_flight_id_col, get_flights
 from flights_ai_model_airport.features import build_inference_data
 from flights_ai_model_airport.flights_ai_model_utils import AIRPORT_MODEL_ENDPOINTS
 
@@ -140,7 +140,6 @@ def run_inference(run_date: date, model_path: Path):
     from data_engineering.adsb.read_adsb import read_adsb
 
     df_flights = get_flights(run_date)
-    df_flights = df_flights.filter(pia_or_american_ladd_icao_filter())
     icaos = df_flights.get_column("icao").unique().to_list()
     df_adsb_full = read_adsb(run_date, icaos=icaos)
     model = load_model(model_path)
@@ -151,7 +150,6 @@ def run_score_canidates(run_date: date, model_path: Path):
     from data_engineering.adsb.read_adsb import read_adsb
 
     df_flights = get_flights(run_date)
-    df_flights = df_flights.filter(pia_or_american_ladd_icao_filter())
     icaos = df_flights.get_column("icao").unique().to_list()
     df_adsb_full = read_adsb(run_date, icaos=icaos)
     model = load_model(model_path)

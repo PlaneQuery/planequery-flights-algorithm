@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 import polars as pl
 from data_engineering.adsb.read_adsb import read_adsb
-from data_engineering.flights.flight_type import FLIGHT_POLARS_SCHEMA, get_flights, pia_or_american_ladd_icao_filter
+from data_engineering.flights.flight_type import FLIGHT_POLARS_SCHEMA, get_flights
 from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
 from flights.flights_comparison import df_flights_comparision, df_flights_comparison_stats
 from flights.flights_match_adsb import get_matching_icaos_in_flights
