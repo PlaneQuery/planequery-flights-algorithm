@@ -1,7 +1,7 @@
 # planequery-flights-algorithm
 **The world’s best ADS-B → flights algorithm.**
 
-See [paper/Evaluating and Improving Flight Derivation from ADS-B Data Draft Submission.pdf](paper/Evaluating%20and%20Improving%20Flight%20Derivation%20from%20ADS-B%20Data%20Draft%20Submission.pdf)
+See [paper/Evaluating-and-Improving-Flight-Derivation-from-ADS-B-Data-Draft-Submission.pdf](paper/Evaluating-and-Improving-Flight-Derivation-from-ADS-B-Data-Draft-Submission-Draft-4.pdf)
 
 Performance has been measured against [OpenSky’s](https://opensky-network.org/datasets/#trino-tables/flights/day=1772323200/) and [ADSBExchange’s](https://samples.adsbexchange.com/index.html#flights-ax-v2/2026/03/01) algorithms using [SWIM SFDPS](https://www.faa.gov/air_traffic/technology/swim/sfdps) and [Bureau of Transportation Statistics (BTS)](https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FGJ&QO_fu146_anzr=b0-gvzr) flight data. It has also been tested against [EUROCONTROL](https://www.eurocontrol.int/dashboard/aviation-data-research) flight data. To assess the algorithm’s performance yourself, the repository includes flights generated from ADSB.lol ADS-B data from 2026-06-01 to 2026-07-01: [data/flights/algorithm/v1/adsblol/year=2026/month=06](data/flights/algorithm/v1/adsblol/year=2026/month=06).
 
