@@ -40,7 +40,11 @@ for num_days in range(1, 16):
         adsb_src="adsbx",
         pia_or_american_ladd_only=False,
     )
-    df_gold = get_matching_icaos_in_flights(df_sfdps_flights, df_adsb)
+    df_gold = get_matching_icaos_in_flights(
+        df_sfdps_flights,
+        df_adsb,
+        datetime.combine(test_date, datetime.min.time()),
+    )
     df_test = df_test.filter(
         pl.col("icao").is_in(df_gold.get_column("icao").implode())
     )

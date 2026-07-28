@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Literal, overload
 
 import polars as pl
 
@@ -313,6 +314,7 @@ def ensure_adsb_source_data(
         raise ValueError(f"Unknown ADS-B source: {source!r}")
 
 
+@overload
 def read_adsb(
     start: date | datetime,
     end: datetime | None = None,
@@ -322,16 +324,44 @@ def read_adsb(
     icaos: list[str] | None = None,
     pia_or_american_ladd_only: bool = False,
     source: str = "adsblol",
-) -> pl.DataFrame:
-    """Read ADS-B messages, eagerly (lazy scanning is only used internally
-    where it helps, e.g. column/predicate pushdown while reading parquet).
+    lazy: Literal[False] = False,
+) -> pl.DataFrame: ...
+
+
+@overload
+def read_adsb(
+    start: date | datetime,
+    end: datetime | None = None,
+    columns=DEFAULT_COLUMNS_SET,
+    additional_columns=None,
+    *,
+    icaos: list[str] | None = None,
+    pia_or_american_ladd_only: bool = False,
+    source: str = "adsblol",
+    lazy: Literal[True],
+) -> pl.LazyFrame: ...
+
+
+def read_adsb(
+    start: date | datetime,
+    end: datetime | None = None,
+    columns=DEFAULT_COLUMNS_SET,
+    additional_columns=None,
+    *,
+    icaos: list[str] | None = None,
+    pia_or_american_ladd_only: bool = False,
+    source: str = "adsblol",
+    lazy: bool = False,
+) -> pl.DataFrame | pl.LazyFrame:
+    """Read ADS-B messages.
 
     Pass a `date` for `start` to read a single full day, or `datetime`s for
     `start`/`end` to read a `[start, end)` range spanning one or more days
     (e.g. a context window around a target day).
 
     `source` selects the data provider: "adsblol" (default), "adsbx", or
-    "opensky".
+    "opensky". Set `lazy=True` to return a `polars.LazyFrame`; by default the
+    result is collected and returned as a `polars.DataFrame`.
     """
     if isinstance(start, datetime):
         start_dt = start
@@ -374,7 +404,7 @@ def read_adsb(
         raise ValueError(f"Unknown ADS-B source: {source!r}")
 
     lf = lf.filter((pl.col("time") >= start_dt) & (pl.col("time") < end_dt)).select(requested_columns)
-    return lf.collect()
+    return lf if lazy else lf.collect()
 
 
 def read_icaos_from_adsb(current_day: date, icaos: list[str], columns=DEFAULT_COLUMNS_SET):

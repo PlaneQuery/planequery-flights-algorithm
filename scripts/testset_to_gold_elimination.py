@@ -26,7 +26,11 @@ def get_kept_stats(source_flight, adsb_src: str):
         columns=ADSB_MATCHING_COLUMNS,
         source=adsb_src,
     )
-    df_gold = get_matching_icaos_in_flights(df_source_flights, df_adsb)
+    df_gold = get_matching_icaos_in_flights(
+        df_source_flights,
+        df_adsb,
+        datetime.combine(test_date, datetime.min.time()),
+    )
     gold_icaos = df_gold.get_column("icao").n_unique()
     kept_flights_percent = df_gold.height / total_flights * 100
     kept_icaos_percent = gold_icaos / total_icaos * 100
