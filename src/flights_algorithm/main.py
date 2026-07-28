@@ -4,7 +4,6 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from enum import Enum
 from functools import cache
 from pathlib import Path
 from typing import Sequence
@@ -22,6 +21,7 @@ from data_engineering.adsb.read_adsb import (
 )
 from data_engineering.flights.flight_type import flights_algorithm_output_path
 from data_engineering.utils import OUTPUT_DIR
+from flights_algorithm.readsb_legs import mark_leg_indexes
 
 
 AIRPORT_CANDIDATE_RADIUS_KM = 40.0
@@ -36,33 +36,12 @@ AIRPORT_SIZE_RANK = {
     "medium_airport": 1,
     "large_airport": 2,
 }
-TAKEOFF_SPEED_KT = 35.0
-LANDING_SPEED_KT = 55.0
-TAKEOFF_ACCELERATION_KT = 20.0
-APPROACH_SPEED_KT = 130.0
-APPROACH_DECELERATION_KT = -20.0
-MAX_LANDING_ALTITUDE_FT = 20_000
-HIGH_ALTITUDE_APPROACH_SPEED_DROP_KT = 80.0
-AIRBORNE_GAP_MIN_SPEED_KT = 90.0
-AIRBORNE_GAP_MIN_ALTITUDE_FT = 1_000
-MIN_CONTINUOUS_GAP_AVERAGE_SPEED_KT = AIRBORNE_GAP_MIN_SPEED_KT
-MAX_AIRBORNE_GAP_AVERAGE_SPEED_KT = 700.0
-MAX_CONTINUOUS_GAP_TRACK_DEVIATION_DEG = 135.0
-MIN_STOP_LIKE_GAP = timedelta(minutes=7)
-MAX_STOP_LIKE_GAP_DISTANCE_KM = 20.0
-MAX_STOP_LIKE_GAP_AVERAGE_SPEED_KT = 25.0
-MAX_STOP_LIKE_GAP_ALTITUDE_FT = 7_750
 MAX_SHORT_SAME_AIRPORT_DURATION = timedelta(minutes=25)
-TAKEOFF_BACKDATE_MIN_ALTITUDE_FT = 3_000
-TAKEOFF_BACKDATE_CLIMB_RATE_FT_PER_MIN = 800.0
-TAKEOFF_BACKDATE_MAX_SPEED_KT = 520.0
-MAX_MESSAGE_GAP = timedelta(minutes=30)
-MAX_AIRBORNE_GAP = timedelta(hours=8)
-MAX_TAKEOFF_BACKDATE = timedelta(minutes=30)
-LANDING_CONFIRMATION_TIME = timedelta(minutes=2)
 MIN_FLIGHT_DURATION = timedelta(minutes=5)
 MIN_FLIGHT_DISTANCE_KM = 5.0
-MAX_SEGMENT_STITCH_GAP = timedelta(minutes=45)
+MIN_AIRBORNE_RUN_MESSAGES = 2
+MIN_AIRBORNE_RUN_DISTANCE_KM = 1.0
+MIN_AIRBORNE_RUN_SPEED_KT = 30
 ADSB_ALGORITHM_COLUMNS = [
     "time",
     "icao",
@@ -96,11 +75,6 @@ AIRCRAFT_METADATA_ALIASES = {
 }
 
 
-class FlightState(Enum):
-    GROUND = "ground"
-    IN_FLIGHT = "in_flight"
-
-
 @dataclass(frozen=True)
 class AdsbPositionMessage:
     time: datetime
@@ -121,19 +95,6 @@ class AdsbPositionMessage:
     owner: str | None = None
     aircraft_description: str | None = None
     category: str | None = None
-
-
-@dataclass(frozen=True)
-class MessageMotion:
-    prev: AdsbMessageRow | AdsbPositionMessage
-    curr: AdsbMessageRow | AdsbPositionMessage
-    time_gap: timedelta
-    calculated_ground_speed_kt: float | None
-    reported_ground_speed_kt: float | None
-    effective_ground_speed_kt: float | None
-    previous_ground_speed_kt: float | None
-    speed_delta_kt: float | None
-    distance_km: float
 
 
 @dataclass(frozen=True)
@@ -172,26 +133,6 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
     )
     return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def calculated_ground_speed_kt(
-    prev: AdsbMessageRow | AdsbPositionMessage,
-    curr: AdsbMessageRow | AdsbPositionMessage,
-) -> float | None:
-    dt_s = (curr.time - prev.time).total_seconds()
-    if dt_s <= 0:
-        return None
-
-    distance_km = haversine_km(prev.lat, prev.lon, curr.lat, curr.lon)
-    return distance_km * 1943.844492 / dt_s
-
-
-def _optional_float(value: float | None) -> float | None:
-    if value is None:
-        return None
-    if math.isnan(value):
-        return None
-    return float(value)
 
 
 def _optional_int(value) -> int | None:
@@ -246,16 +187,6 @@ def _db_flags_counts_for_messages(
         if (value := _db_flags_from_message(message)) is not None
     ]
     return tuple(Counter(db_flags).items())
-
-
-def _merge_db_flags_counts(
-    *counts_by_segment: tuple[tuple[int, int], ...],
-) -> tuple[tuple[int, int], ...]:
-    counter = Counter()
-    for counts in counts_by_segment:
-        for db_flags, count in counts:
-            counter[db_flags] += count
-    return tuple(counter.items())
 
 
 def _db_flags_mode_from_counts(db_flags_counts: tuple[tuple[int, int], ...]) -> int | None:
@@ -313,19 +244,6 @@ def _aircraft_metadata_counts_for_messages(
     )
 
 
-def _merge_aircraft_metadata_counts(
-    *counts_by_segment: tuple[tuple[str, tuple[tuple[str, int], ...]], ...],
-) -> tuple[tuple[str, tuple[tuple[str, int], ...]], ...]:
-    counters = {column: Counter() for column in AIRCRAFT_METADATA_COLUMNS}
-    for counts in counts_by_segment:
-        for column, value_counts in counts:
-            counters[column].update(dict(value_counts))
-    return tuple(
-        (column, tuple(counters[column].items()))
-        for column in AIRCRAFT_METADATA_COLUMNS
-    )
-
-
 def _aircraft_metadata_mode_from_counts(
     aircraft_metadata_counts: tuple[tuple[str, tuple[tuple[str, int], ...]], ...],
 ) -> dict[str, str]:
@@ -334,31 +252,6 @@ def _aircraft_metadata_mode_from_counts(
         if value_counts:
             modes[column] = max(value_counts, key=lambda item: item[1])[0]
     return modes
-
-
-def _reported_ground_speed_kt(message: AdsbMessageRow | AdsbPositionMessage) -> float | None:
-    return _optional_float(
-        getattr(message, "ground_speed_kt", getattr(message, "gs", None))
-    )
-
-
-def _track_deg(message: AdsbMessageRow | AdsbPositionMessage) -> float | None:
-    return _optional_float(
-        getattr(message, "track_deg", getattr(message, "track", None))
-    )
-
-
-def _on_ground(message: AdsbMessageRow | AdsbPositionMessage) -> bool | None:
-    value = getattr(message, "on_ground", None)
-    if value is None:
-        return None
-    return bool(value)
-
-
-def _baro_altitude_ft(message: AdsbMessageRow | AdsbPositionMessage) -> float | None:
-    return _optional_float(
-        getattr(message, "baro_altitude_ft", getattr(message, "alt_baro", None))
-    )
 
 
 def _baro_altitude_int_ft(message: AdsbMessageRow | AdsbPositionMessage) -> int | None:
@@ -373,497 +266,153 @@ def _geom_altitude_ft(message: AdsbMessageRow | AdsbPositionMessage) -> int | No
     )
 
 
-def _motion_edges(messages: Sequence[AdsbMessageRow | AdsbPositionMessage]) -> list[MessageMotion]:
-    sorted_messages = sorted(messages, key=lambda row: row.time)
-    edges = []
-    for prev, curr in zip(sorted_messages, sorted_messages[1:]):
-        distance_km = haversine_km(prev.lat, prev.lon, curr.lat, curr.lon)
-        calculated_speed_kt = calculated_ground_speed_kt(prev, curr)
-        reported_speed_kt = _reported_ground_speed_kt(curr)
-        effective_speed_kt = reported_speed_kt if reported_speed_kt is not None else calculated_speed_kt
-        previous_speed_kt = _reported_ground_speed_kt(prev)
-        speed_delta_kt = (
-            effective_speed_kt - previous_speed_kt
-            if effective_speed_kt is not None and previous_speed_kt is not None
-            else None
-        )
-        edges.append(
-            MessageMotion(
-                prev=prev,
-                curr=curr,
-                time_gap=curr.time - prev.time,
-                calculated_ground_speed_kt=calculated_speed_kt,
-                reported_ground_speed_kt=reported_speed_kt,
-                effective_ground_speed_kt=effective_speed_kt,
-                previous_ground_speed_kt=previous_speed_kt,
-                speed_delta_kt=speed_delta_kt,
-                distance_km=distance_km,
+def _flight_endpoint_messages(
+    leg_messages: Sequence[AdsbMessageRow | AdsbPositionMessage],
+) -> (
+    tuple[
+        AdsbMessageRow | AdsbPositionMessage,
+        AdsbMessageRow | AdsbPositionMessage,
+    ]
+    | None
+):
+    """Locate takeoff and landing within a readsb marker-delimited leg.
+
+    readsb's leg markers are separators between flights, commonly placed in
+    the middle of a ground dwell. They are not takeoff or landing events.
+    Prefer the strongest sustained airborne run and its surrounding ground
+    transitions while retaining the leg endpoints as fallbacks for partial
+    traces. This prevents isolated bad ``on_ground`` values from becoming
+    takeoff or landing events.
+    """
+    airborne_runs: list[tuple[int, int, int, int]] = []
+    run_start = None
+    airborne_message_count = 0
+
+    for index, message in enumerate(leg_messages):
+        on_ground = _optional_bool(getattr(message, "on_ground", None))
+        if on_ground is False:
+            if run_start is None:
+                run_start = index
+            airborne_message_count += 1
+        elif on_ground is True and run_start is not None:
+            airborne_runs.append(
+                (run_start, index - 1, index, airborne_message_count)
+            )
+            run_start = None
+            airborne_message_count = 0
+
+    if run_start is not None:
+        airborne_runs.append(
+            (
+                run_start,
+                len(leg_messages) - 1,
+                len(leg_messages) - 1,
+                airborne_message_count,
             )
         )
-    return edges
 
+    best_run = None
+    best_score = None
+    for start, end, landing, message_count in airborne_runs:
+        if message_count < MIN_AIRBORNE_RUN_MESSAGES:
+            continue
 
-def _is_takeoff_motion(motion: MessageMotion) -> bool:
-    curr_on_ground = _on_ground(motion.curr)
-    if curr_on_ground is True:
-        return False
-    if curr_on_ground is False and _on_ground(motion.prev) is True:
-        if motion.effective_ground_speed_kt is None:
-            return True
-        return (
-            motion.effective_ground_speed_kt >= TAKEOFF_SPEED_KT
-            or (
-                motion.speed_delta_kt is not None
-                and motion.speed_delta_kt >= TAKEOFF_ACCELERATION_KT
-            )
+        run_messages = leg_messages[start : end + 1]
+        distance_km = sum(
+            haversine_km(previous.lat, previous.lon, current.lat, current.lon)
+            for previous, current in zip(run_messages, run_messages[1:])
         )
-    speed = motion.effective_ground_speed_kt
-    return speed is not None and speed >= TAKEOFF_SPEED_KT
-
-
-def _is_landing_motion(motion: MessageMotion) -> bool:
-    if _on_ground(motion.curr) is True:
-        return True
-    speed = motion.effective_ground_speed_kt
-    if speed is None:
-        return False
-    if speed <= LANDING_SPEED_KT:
-        return True
-    return (
-        speed <= APPROACH_SPEED_KT
-        and motion.speed_delta_kt is not None
-        and motion.speed_delta_kt <= APPROACH_DECELERATION_KT
-    )
-
-
-def _landing_endpoint_makes_sense(
-    landing_message: AdsbMessageRow | AdsbPositionMessage,
-    max_speed_kt: float | None,
-) -> bool:
-    if _on_ground(landing_message) is True:
-        return True
-
-    landing_altitude_ft = _baro_altitude_ft(landing_message)
-    if landing_altitude_ft is None:
-        return True
-    if landing_altitude_ft <= MAX_LANDING_ALTITUDE_FT:
-        return True
-
-    landing_speed_kt = _reported_ground_speed_kt(landing_message)
-    return (
-        max_speed_kt is not None
-        and landing_speed_kt is not None
-        and landing_speed_kt <= APPROACH_SPEED_KT
-        and max_speed_kt - landing_speed_kt >= HIGH_ALTITUDE_APPROACH_SPEED_DROP_KT
-    )
-
-
-def _gap_average_speed_kt(motion: MessageMotion) -> float | None:
-    dt_s = motion.time_gap.total_seconds()
-    if dt_s <= 0:
-        return None
-    return motion.distance_km * 1943.844492 / dt_s
-
-
-def _initial_bearing_deg(
-    start: AdsbMessageRow | AdsbPositionMessage,
-    end: AdsbMessageRow | AdsbPositionMessage,
-) -> float | None:
-    if start.lat == end.lat and start.lon == end.lon:
-        return None
-
-    start_lat = math.radians(start.lat)
-    end_lat = math.radians(end.lat)
-    delta_lon = math.radians(end.lon - start.lon)
-    y = math.sin(delta_lon) * math.cos(end_lat)
-    x = (
-        math.cos(start_lat) * math.sin(end_lat)
-        - math.sin(start_lat) * math.cos(end_lat) * math.cos(delta_lon)
-    )
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
-
-
-def _angular_difference_deg(first: float, second: float) -> float:
-    return abs((first - second + 180.0) % 360.0 - 180.0)
-
-
-def _gap_tracks_are_continuous(motion: MessageMotion) -> bool:
-    """Reject only endpoint tracks that clearly point against the gap displacement."""
-    gap_bearing_deg = _initial_bearing_deg(motion.prev, motion.curr)
-    if gap_bearing_deg is None:
-        return True
-
-    endpoint_tracks = (
-        (_track_deg(motion.prev), _reported_ground_speed_kt(motion.prev)),
-        (_track_deg(motion.curr), _reported_ground_speed_kt(motion.curr)),
-    )
-    for track_deg, speed_kt in endpoint_tracks:
-        if track_deg is None:
-            continue
-        if speed_kt is not None and speed_kt < AIRBORNE_GAP_MIN_SPEED_KT:
-            continue
-        if (
-            _angular_difference_deg(track_deg, gap_bearing_deg)
-            > MAX_CONTINUOUS_GAP_TRACK_DEVIATION_DEG
-        ):
-            return False
-    return True
-
-
-def _message_is_low_for_stop_gap(message: AdsbMessageRow | AdsbPositionMessage) -> bool:
-    if _on_ground(message) is True:
-        return True
-
-    altitude_ft = _baro_altitude_ft(message)
-    if altitude_ft is None:
-        return True
-    return altitude_ft <= MAX_STOP_LIKE_GAP_ALTITUDE_FT
-
-
-def _is_stop_like_gap(motion: MessageMotion) -> bool:
-    if motion.time_gap < MIN_STOP_LIKE_GAP:
-        return False
-
-    average_speed_kt = _gap_average_speed_kt(motion)
-    if average_speed_kt is None:
-        return False
-    if average_speed_kt > MAX_STOP_LIKE_GAP_AVERAGE_SPEED_KT:
-        return False
-    if motion.distance_km > MAX_STOP_LIKE_GAP_DISTANCE_KM:
-        return False
-    return _message_is_low_for_stop_gap(motion.prev) and _message_is_low_for_stop_gap(motion.curr)
-
-
-def _message_looks_airborne_for_gap(message: AdsbMessageRow | AdsbPositionMessage) -> bool:
-    if _on_ground(message) is True:
-        return False
-
-    speed_kt = _reported_ground_speed_kt(message)
-    altitude_ft = _baro_altitude_ft(message)
-    return (
-        speed_kt is not None
-        and speed_kt >= AIRBORNE_GAP_MIN_SPEED_KT
-    ) or (
-        altitude_ft is not None
-        and altitude_ft >= AIRBORNE_GAP_MIN_ALTITUDE_FT
-    )
-
-
-def _should_continue_across_gap(motion: MessageMotion) -> bool:
-    if motion.time_gap > MAX_AIRBORNE_GAP:
-        return False
-    if _is_stop_like_gap(motion):
-        return False
-    if not _message_looks_airborne_for_gap(motion.prev):
-        return False
-    if not _message_looks_airborne_for_gap(motion.curr):
-        return False
-
-    average_speed_kt = _gap_average_speed_kt(motion)
-    if average_speed_kt is None or average_speed_kt > MAX_AIRBORNE_GAP_AVERAGE_SPEED_KT:
-        return False
-    return (
-        average_speed_kt >= MIN_CONTINUOUS_GAP_AVERAGE_SPEED_KT
-        and _gap_tracks_are_continuous(motion)
-    )
-
-
-def _gap_indicates_unobserved_turnaround(motion: MessageMotion) -> bool:
-    """Identify gaps that contain enough unexplained time or a course reversal."""
-    if motion.time_gap > MAX_AIRBORNE_GAP:
-        return False
-    if not _message_looks_airborne_for_gap(motion.prev):
-        return False
-    if not _message_looks_airborne_for_gap(motion.curr):
-        return False
-
-    average_speed_kt = _gap_average_speed_kt(motion)
-    if average_speed_kt is None or average_speed_kt > MAX_AIRBORNE_GAP_AVERAGE_SPEED_KT:
-        return False
-    return (
-        average_speed_kt < MIN_CONTINUOUS_GAP_AVERAGE_SPEED_KT
-        or not _gap_tracks_are_continuous(motion)
-    )
-
-
-def _estimated_takeoff_time(message: AdsbMessageRow | AdsbPositionMessage) -> datetime:
-    if _on_ground(message) is True:
-        return message.time
-
-    altitude_ft = _baro_altitude_ft(message)
-    if altitude_ft is None or altitude_ft < TAKEOFF_BACKDATE_MIN_ALTITUDE_FT:
-        return message.time
-
-    speed_kt = _reported_ground_speed_kt(message)
-    if speed_kt is not None and speed_kt > TAKEOFF_BACKDATE_MAX_SPEED_KT:
-        return message.time
-
-    backdate = min(
-        MAX_TAKEOFF_BACKDATE,
-        timedelta(minutes=altitude_ft / TAKEOFF_BACKDATE_CLIMB_RATE_FT_PER_MIN),
-    )
-    return message.time - backdate
-
-
-def _maybe_add_segment(
-    segments: list[FlightSegment],
-    takeoff_message: AdsbMessageRow | AdsbPositionMessage | None,
-    landing_message: AdsbMessageRow | AdsbPositionMessage,
-    distance_travelled_km: float,
-    max_speed_kt: float | None,
-    segment_messages: Sequence[AdsbMessageRow | AdsbPositionMessage],
-    *,
-    takeoff_time_message: AdsbMessageRow | AdsbPositionMessage | None = None,
-    landing_time_message: AdsbMessageRow | AdsbPositionMessage | None = None,
-    allow_unobserved_landing: bool = False,
-) -> None:
-    if takeoff_message is None:
-        return
-    if takeoff_time_message is None:
-        takeoff_time_message = takeoff_message
-    if landing_time_message is None:
-        landing_time_message = landing_message
-
-    takeoff_time = _estimated_takeoff_time(takeoff_time_message)
-    landing_time = landing_time_message.time
-    if landing_time - takeoff_time < MIN_FLIGHT_DURATION:
-        return
-    if distance_travelled_km < MIN_FLIGHT_DISTANCE_KM:
-        return
-    if (
-        not allow_unobserved_landing
-        and not _landing_endpoint_makes_sense(landing_message, max_speed_kt)
-    ):
-        return
-    segments.append(
-        FlightSegment(
-            icao=takeoff_message.icao,
-            takeoff_time=takeoff_time,
-            landing_time=landing_time,
-            takeoff_message=takeoff_message,
-            landing_message=landing_message,
-            distance_travelled_km=distance_travelled_km,
-            db_flags_counts=_db_flags_counts_for_messages(segment_messages),
-            aircraft_metadata_counts=_aircraft_metadata_counts_for_messages(
-                segment_messages
+        max_speed_kt = max(
+            (
+                speed
+                for message in run_messages
+                if (
+                    speed := _optional_int(
+                        getattr(message, "ground_speed_kt", None)
+                    )
+                )
+                is not None
             ),
+            default=None,
         )
-    )
+        has_altitude = any(
+            _baro_altitude_int_ft(message) is not None
+            or _geom_altitude_ft(message) is not None
+            for message in run_messages
+        )
+        has_airborne_evidence = (
+            distance_km >= MIN_AIRBORNE_RUN_DISTANCE_KM
+            or (
+                max_speed_kt is not None
+                and max_speed_kt >= MIN_AIRBORNE_RUN_SPEED_KT
+            )
+            or has_altitude
+        )
+        if not has_airborne_evidence:
+            continue
+
+        duration = run_messages[-1].time - run_messages[0].time
+        score = (distance_km, duration.total_seconds(), message_count)
+        if best_score is None or score > best_score:
+            best_run = (start, landing)
+            best_score = score
+
+    if best_run is None and any(
+        _optional_bool(getattr(message, "on_ground", None)) is True
+        for message in leg_messages
+    ):
+        return None
+
+    if best_run is None:
+        return leg_messages[0], leg_messages[-1]
+
+    takeoff_index, landing_index = best_run
+    return leg_messages[takeoff_index], leg_messages[landing_index]
 
 
-def identify_flight_segments(messages: Sequence[AdsbMessageRow | AdsbPositionMessage]) -> list[FlightSegment]:
-    state = FlightState.GROUND
-    takeoff_message = None
-    takeoff_time_message = None
-    landing_candidate = None
-    distance_travelled_km = 0.0
-    max_speed_kt = None
-    last_message = None
-    segment_messages = []
-    ground_messages = []
-    ground_distance_travelled_km = 0.0
+def identify_flight_segments(
+    messages: Sequence[AdsbMessageRow | AdsbPositionMessage],
+) -> list[FlightSegment]:
+    """Split an aircraft trace using readsb's ``mark_legs`` algorithm."""
+    sorted_messages = sorted(messages, key=lambda message: message.time)
+    if len(sorted_messages) < 2:
+        return []
+
+    boundaries = [0, *mark_leg_indexes(sorted_messages), len(sorted_messages)]
     segments = []
-
-    for motion in _motion_edges(messages):
-        last_message = motion.curr
-        speed = motion.effective_ground_speed_kt
-        has_ground_state = _on_ground(motion.prev) is not None or _on_ground(motion.curr) is not None
-        if speed is None and not has_ground_state:
+    for start, end in zip(boundaries, boundaries[1:]):
+        leg_messages = sorted_messages[start:end]
+        if len(leg_messages) < 2:
             continue
 
-        gap_was_continued = False
-        if state == FlightState.IN_FLIGHT and _is_stop_like_gap(motion):
-            _maybe_add_segment(
-                segments,
-                takeoff_message,
-                motion.prev,
-                distance_travelled_km,
-                max_speed_kt,
-                segment_messages,
-                takeoff_time_message=takeoff_time_message,
-                landing_time_message=motion.prev,
+        distance_travelled_km = sum(
+            haversine_km(previous.lat, previous.lon, current.lat, current.lon)
+            for previous, current in zip(leg_messages, leg_messages[1:])
+        )
+        endpoint_messages = _flight_endpoint_messages(leg_messages)
+        if endpoint_messages is None:
+            continue
+        takeoff_message, landing_message = endpoint_messages
+        if landing_message.time - takeoff_message.time < MIN_FLIGHT_DURATION:
+            continue
+        if distance_travelled_km < MIN_FLIGHT_DISTANCE_KM:
+            continue
+
+        segments.append(
+            FlightSegment(
+                icao=takeoff_message.icao,
+                takeoff_time=takeoff_message.time,
+                landing_time=landing_message.time,
+                takeoff_message=takeoff_message,
+                landing_message=landing_message,
+                distance_travelled_km=distance_travelled_km,
+                db_flags_counts=_db_flags_counts_for_messages(leg_messages),
+                aircraft_metadata_counts=_aircraft_metadata_counts_for_messages(
+                    leg_messages
+                ),
             )
-            state = FlightState.GROUND
-            takeoff_message = None
-            takeoff_time_message = None
-            landing_candidate = None
-            distance_travelled_km = 0.0
-            max_speed_kt = None
-            segment_messages = []
-            ground_messages = []
-            ground_distance_travelled_km = 0.0
-            if motion.time_gap > MAX_MESSAGE_GAP:
-                ground_messages = [motion.curr]
-            elif _is_takeoff_motion(motion):
-                state = FlightState.IN_FLIGHT
-                takeoff_message = motion.curr
-                takeoff_time_message = motion.curr
-                landing_candidate = None
-                distance_travelled_km = 0.0
-                max_speed_kt = speed
-                segment_messages = [motion.curr]
-            else:
-                ground_messages = [motion.curr]
-            continue
-
-        if motion.time_gap > MAX_MESSAGE_GAP:
-            if state == FlightState.IN_FLIGHT and _should_continue_across_gap(motion):
-                landing_candidate = None
-                distance_travelled_km += motion.distance_km
-                gap_was_continued = True
-            elif state == FlightState.IN_FLIGHT:
-                probable_unobserved_landing = _gap_indicates_unobserved_turnaround(
-                    motion
-                )
-                _maybe_add_segment(
-                    segments,
-                    takeoff_message,
-                    motion.prev,
-                    distance_travelled_km,
-                    max_speed_kt,
-                    segment_messages,
-                    takeoff_time_message=takeoff_time_message,
-                    landing_time_message=motion.prev,
-                    allow_unobserved_landing=probable_unobserved_landing,
-                )
-                state = FlightState.GROUND
-                takeoff_message = None
-                takeoff_time_message = None
-                landing_candidate = None
-                distance_travelled_km = 0.0
-                max_speed_kt = None
-                segment_messages = []
-                ground_messages = [motion.curr]
-                ground_distance_travelled_km = 0.0
-                continue
-            else:
-                state = FlightState.GROUND
-                takeoff_message = None
-                takeoff_time_message = None
-                landing_candidate = None
-                distance_travelled_km = 0.0
-                max_speed_kt = None
-                segment_messages = []
-                ground_messages = [motion.curr]
-                ground_distance_travelled_km = 0.0
-                continue
-
-        if state == FlightState.GROUND:
-            if not ground_messages:
-                ground_messages = [motion.prev]
-            elif ground_messages[-1].time != motion.prev.time:
-                ground_messages.append(motion.prev)
-
-            if _is_takeoff_motion(motion):
-                if ground_messages[-1].time != motion.curr.time:
-                    ground_messages.append(motion.curr)
-                state = FlightState.IN_FLIGHT
-                takeoff_message = ground_messages[0]
-                takeoff_time_message = motion.curr
-                landing_candidate = None
-                distance_travelled_km = ground_distance_travelled_km + motion.distance_km
-                max_speed_kt = speed
-                segment_messages = ground_messages
-                ground_messages = []
-                ground_distance_travelled_km = 0.0
-            else:
-                if ground_messages[-1].time != motion.curr.time:
-                    ground_messages.append(motion.curr)
-                ground_distance_travelled_km += motion.distance_km
-            continue
-
-        if speed is not None:
-            max_speed_kt = speed if max_speed_kt is None else max(max_speed_kt, speed)
-        if not gap_was_continued:
-            distance_travelled_km += motion.distance_km
-        segment_messages.append(motion.curr)
-        if _is_landing_motion(motion):
-            if landing_candidate is None:
-                landing_candidate = motion.curr
-            if motion.curr.time - landing_candidate.time >= LANDING_CONFIRMATION_TIME:
-                _maybe_add_segment(
-                    segments,
-                    takeoff_message,
-                    motion.curr,
-                    distance_travelled_km,
-                    max_speed_kt,
-                    segment_messages,
-                    takeoff_time_message=takeoff_time_message,
-                    landing_time_message=landing_candidate,
-                )
-                state = FlightState.GROUND
-                takeoff_message = None
-                takeoff_time_message = None
-                landing_candidate = None
-                distance_travelled_km = 0.0
-                max_speed_kt = None
-                segment_messages = []
-                ground_messages = [motion.curr]
-                ground_distance_travelled_km = 0.0
-        else:
-            landing_candidate = None
-
-    if state == FlightState.IN_FLIGHT and landing_candidate is not None and last_message is not None:
-        _maybe_add_segment(
-            segments,
-            takeoff_message,
-            last_message,
-            distance_travelled_km,
-            max_speed_kt,
-            segment_messages,
-            takeoff_time_message=takeoff_time_message,
-            landing_time_message=landing_candidate,
         )
-    elif state == FlightState.IN_FLIGHT and last_message is not None:
-        _maybe_add_segment(
-            segments,
-            takeoff_message,
-            last_message,
-            distance_travelled_km,
-            max_speed_kt,
-            segment_messages,
-            takeoff_time_message=takeoff_time_message,
-            landing_time_message=last_message,
-        )
-
     return segments
-
-
-def stitch_flight_segments(segments: Sequence[FlightSegment]) -> list[FlightSegment]:
-    stitched = []
-    current = None
-
-    for segment in sorted(segments, key=lambda row: (row.icao, row.takeoff_time)):
-        if current is None:
-            current = segment
-            continue
-
-        gap = segment.takeoff_time - current.landing_time
-        if segment.icao == current.icao and gap <= MAX_SEGMENT_STITCH_GAP:
-            current = FlightSegment(
-                icao=current.icao,
-                takeoff_time=current.takeoff_time,
-                landing_time=max(current.landing_time, segment.landing_time),
-                takeoff_message=current.takeoff_message,
-                landing_message=segment.landing_message,
-                distance_travelled_km=current.distance_travelled_km + segment.distance_travelled_km,
-                db_flags_counts=_merge_db_flags_counts(
-                    current.db_flags_counts,
-                    segment.db_flags_counts,
-                ),
-                aircraft_metadata_counts=_merge_aircraft_metadata_counts(
-                    current.aircraft_metadata_counts,
-                    segment.aircraft_metadata_counts,
-                ),
-            )
-        else:
-            stitched.append(current)
-            current = segment
-
-    if current is not None:
-        stitched.append(current)
-
-    return stitched
 
 
 def _rows_to_position_messages(df: pl.DataFrame) -> list[AdsbPositionMessage]:
@@ -1100,22 +649,6 @@ def _segment_takes_off_in_window(segment: FlightSegment, start: datetime, end: d
     return start <= segment.takeoff_time < end
 
 
-def _is_american_icao_expr() -> pl.Expr:
-    icao = pl.col("icao").str.to_lowercase()
-    return (icao >= "a00000") & (icao <= "afffff")
-
-
-def _pia_or_american_ladd_filter() -> pl.Expr:
-    return (
-        pl.col("pia").fill_null(False)
-        | (_is_american_icao_expr() & pl.col("ladd").fill_null(False))
-    )
-
-
-def _pia_or_american_ladd_icao_filter() -> pl.Expr:
-    return _pia_or_american_ladd_filter().any().over("icao")
-
-
 def _segment_adsb_df(
     df_adsb: pl.DataFrame,
 ) -> list[FlightSegment]:
@@ -1167,6 +700,7 @@ def _limit_icaos_to_sfdps_or_bts(
         return sorted(source_icaos)
     return [icao for icao in icaos if icao in source_icaos]
 
+
 MODEL_PATH = Path(
     os.getenv(
         "FLIGHTS_AIRPORT_MODEL_PATH",
@@ -1192,7 +726,13 @@ def _run_airport_model_inference(
     )
 
 
-def process_icaos(day_start: datetime, day_end: datetime, icaos: list[str], no_airports_model: bool = False, source: str = "adsblol", target_date: date | None = None) -> pl.DataFrame:
+def process_icaos(
+    day_start: datetime,
+    day_end: datetime,
+    icaos: list[str],
+    no_airports_model: bool = False,
+    source: str = "adsblol",
+) -> pl.DataFrame:
     read_start, read_end = _source_read_window(day_start, day_end)
     df_adsb = read_adsb(read_start, read_end, icaos=icaos, source=source)
     segments = _segment_adsb_df(df_adsb)
@@ -1217,13 +757,11 @@ def _chunks_by_size(items: list[str], chunk_size: int) -> list[list[str]]:
         for start in range(0, len(items), chunk_size)
     ]
 
-
 def _number_of_workers_default() -> int:
     cpu_count = os.cpu_count()
     if cpu_count is None:
         return 1
     return max(1, cpu_count // 2)
-
 
 def main(
     target_date: date = date(2026, 3, 1),
@@ -1255,7 +793,14 @@ def main(
     icao_lists = _chunks_by_size(icaos, 500)
     with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as executor:
         futures = [
-            executor.submit(process_icaos, day_start, day_end, icao_list, no_airports_model, source, target_date)
+            executor.submit(
+                process_icaos,
+                day_start,
+                day_end,
+                icao_list,
+                no_airports_model,
+                source,
+            )
             for icao_list in icao_lists
         ]
         flights_dfs = [future.result() for future in futures]
