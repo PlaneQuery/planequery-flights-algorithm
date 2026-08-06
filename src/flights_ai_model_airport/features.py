@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 import math
 
 import polars as pl
@@ -47,6 +48,58 @@ AIRCRAFT_CATEGORY_RANKING = {
 }
 airport_lookup = AirportLookup()
 
+TrainingEndpointData = tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]
+
+
+@dataclass
+class TrainingDataCache:
+    flights_by_date: dict[date, pl.DataFrame] = field(default_factory=dict)
+    adsb_by_date: dict[date, pl.DataFrame] = field(default_factory=dict)
+    endpoint_data_by_date: dict[tuple[date, str], TrainingEndpointData] = field(
+        default_factory=dict
+    )
+
+    def get_flights(self, dt: date) -> pl.DataFrame:
+        if dt not in self.flights_by_date:
+            print(f"Preparing training flights for {dt}...", flush=True)
+            self.flights_by_date[dt] = get_training_flights(dt).sort(
+                "takeoff_time",
+                "icao",
+            )
+            print(
+                f"Cached {len(self.flights_by_date[dt]):,} training flights "
+                f"for {dt}",
+                flush=True,
+            )
+        return self.flights_by_date[dt]
+
+    def get_adsb(self, dt: date) -> pl.DataFrame:
+        if dt not in self.adsb_by_date:
+            df_flights = self.get_flights(dt)
+            icaos = df_flights.get_column("icao").unique().to_list()
+            print(f"Caching training ADS-B for {dt}...", flush=True)
+            self.adsb_by_date[dt] = read_adsb(dt, icaos=icaos)
+        return self.adsb_by_date[dt]
+
+    def get_endpoint_data(self, dt: date, endpoint: str) -> TrainingEndpointData:
+        key = (dt, endpoint)
+        if key not in self.endpoint_data_by_date:
+            print(
+                f"Building cached {endpoint} features for {dt}...",
+                flush=True,
+            )
+            self.endpoint_data_by_date[key] = process_flights(
+                self.get_flights(dt),
+                self.get_adsb(dt),
+                endpoint,
+            )
+        return self.endpoint_data_by_date[key]
+
 
 def aircraft_category_to_int(category: str) -> int:
     return AIRCRAFT_CATEGORY_RANKING.get(category, 0)
@@ -62,7 +115,7 @@ def get_training_flights(dt: date):
     df_sfdps_flights = get_matching_icaos_in_flights(
         df_sfdps_flights, df_adsb, datetime(dt.year, dt.month, dt.day)
     )
-    df_flights = get_flights(dt, no_airports_model=True)
+    df_flights = get_flights(dt)
     df = df_flights_comparision(df_flights, df_sfdps_flights, datetime(dt.year, dt.month, dt.day), datetime(dt.year, dt.month, dt.day) + timedelta(days=1), compare_airports=False)
     df = df.filter(pl.col("match_status") == "both")
     df = df.with_columns(
@@ -180,25 +233,59 @@ def extract_from_messages(messages: list[AdsbMessage], endpoint: str = "takeoff"
 
 def create_features_for_flight(flight: Flight):
     pass
-def build_training_data(training_dates: list[date], endpoint: str = "takeoff"):
+def build_training_data(
+    training_dates: list[date],
+    endpoint: str = "takeoff",
+    max_flights: int | None = None,
+    cache: TrainingDataCache | None = None,
+):
+    if max_flights is not None and max_flights < 1:
+        raise ValueError("max_flights must be at least 1")
+
     X_parts = []
     Y_parts = []
     flight_id_parts = []
     airport_ident_parts = []
+    flights_remaining = max_flights
     for dt in training_dates:
-        df_flights = get_training_flights(dt)
-        df_flights = add_flight_id_col(df_flights)
-        icaos = df_flights.get_column("icao").unique().to_list()
-        df_adsb_full = read_adsb(dt, icaos=icaos)
-        X, Y, flight_id_rows, airport_ident_rows = process_flights(
-            df_flights,
-            df_adsb_full,
-            endpoint,
+        df_flights = (
+            cache.get_flights(dt)
+            if cache is not None
+            else get_training_flights(dt).sort("takeoff_time", "icao")
         )
+        if flights_remaining is not None:
+            df_flights = df_flights.head(flights_remaining)
+            flights_remaining -= len(df_flights)
+            if df_flights.is_empty():
+                break
+        if cache is None:
+            df_flights = add_flight_id_col(df_flights)
+            icaos = df_flights.get_column("icao").unique().to_list()
+            df_adsb_full = read_adsb(dt, icaos=icaos)
+            X, Y, flight_id_rows, airport_ident_rows = process_flights(
+                df_flights,
+                df_adsb_full,
+                endpoint,
+            )
+        else:
+            X, Y, flight_id_rows, airport_ident_rows = cache.get_endpoint_data(
+                dt,
+                endpoint,
+            )
+            selected_flight_ids = add_flight_id_col(df_flights).get_column(
+                "flight_id"
+            )
+            selected_rows = np.isin(flight_id_rows, selected_flight_ids.to_numpy())
+            X = X[selected_rows]
+            Y = Y[selected_rows]
+            flight_id_rows = flight_id_rows[selected_rows]
+            airport_ident_rows = airport_ident_rows[selected_rows]
         X_parts.append(X)
         Y_parts.append(Y)
         flight_id_parts.append(flight_id_rows)
         airport_ident_parts.append(airport_ident_rows)
+        if flights_remaining == 0:
+            break
 
     return (
         np.concatenate(X_parts),

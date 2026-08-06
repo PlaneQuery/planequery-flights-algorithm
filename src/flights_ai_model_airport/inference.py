@@ -136,10 +136,15 @@ def inference(
     df_flights = set_consecutive_airport_idents_from_scores(df_flights, landing_scores, takeoff_scores)
     return df_flights
 
-def run_inference(run_date: date, model_path: Path):
+def run_inference(
+    run_date: date,
+    model_path: Path,
+    df_flights: pl.DataFrame | None = None,
+):
     from data_engineering.adsb.read_adsb import read_adsb
 
-    df_flights = get_flights(run_date)
+    if df_flights is None:
+        df_flights = get_flights(run_date)
     icaos = df_flights.get_column("icao").unique().to_list()
     df_adsb_full = read_adsb(run_date, icaos=icaos)
     model = load_model(model_path)

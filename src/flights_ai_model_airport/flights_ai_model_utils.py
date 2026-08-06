@@ -9,13 +9,18 @@ def get_model_runs_dir() -> Path:
 
     return OUTPUT_DIR / "data" / "models" / "flights_ai_model_airport" / "runs"
 
-def get_model_path(num_days: int, dt: datetime | None = None) -> Path:
+def get_model_path(
+    num_days: int,
+    dt: datetime | None = None,
+    num_flights: int | None = None,
+) -> Path:
     dt = dt or datetime.now()
     date_str = dt.strftime("%Y-%m-%d_%H-%M")
     commit = subprocess.check_output(
         ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
     ).decode().strip()
-    folder = f"{date_str}_{commit}_{num_days}days"
+    size_label = f"_{num_flights}flights" if num_flights is not None else ""
+    folder = f"{date_str}_{commit}_{num_days}days{size_label}"
     return get_model_runs_dir() / folder
 
 def get_latest_airport_model_path() -> Path:

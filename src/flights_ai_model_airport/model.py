@@ -1,16 +1,12 @@
+import numpy as np
 import polars as pl
 from sklearn.model_selection import GroupShuffleSplit
 import lightgbm as lgb
 
 
 def model_training(X, y, groups, airport_idents, endpoint: str = "airport"):
-    splitter = GroupShuffleSplit(
-        n_splits=1,
-        test_size=0.2,
-        random_state=42,
-    )
-
-    train_idx, val_idx = next(splitter.split(X, y, groups=groups))
+    if len(groups) == 0:
+        raise ValueError(f"No usable flights found for {endpoint} model training")
 
     model = lgb.LGBMClassifier(
         objective="binary",
@@ -21,6 +17,21 @@ def model_training(X, y, groups, airport_idents, endpoint: str = "airport"):
         random_state=42,
         n_jobs=-1,
     )
+
+    if len(np.unique(groups)) == 1:
+        model.fit(X, y)
+        print(
+            f"Top-1 {endpoint} airport accuracy: unavailable "
+            "(only one training flight)"
+        )
+        return model
+
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=0.2,
+        random_state=42,
+    )
+    train_idx, val_idx = next(splitter.split(X, y, groups=groups))
 
     model.fit(
         X[train_idx],
