@@ -1,6 +1,13 @@
 import argparse
+import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+# Direct execution sets sys.path to this file's directory, not the repository's
+# src directory. Prefer this checkout over a stale installed package.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import polars as pl
 from data_engineering.adsb.read_adsb import read_adsb
 from data_engineering.bts.read_bts_ontime_to_flights import get_bts_flights_for_day
@@ -10,7 +17,7 @@ from data_engineering.eurocontrol.read import read_eurocontrol_flights
 from data_engineering.openairframes.read import add_latest_icao_info
 from flights.flights_comparison import df_flights_comparision, df_flights_comparison_stats
 from flights.flights_match_adsb import ADSB_MATCHING_COLUMNS, get_matching_icaos_in_flights
-from utils import current_commit_hash
+from flights.utils import current_commit_hash
 from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
 from data_engineering.utils import OUTPUT_DIR
 

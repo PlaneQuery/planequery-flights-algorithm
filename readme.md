@@ -46,7 +46,7 @@ Downloads ~3GB from https://github.com/adsblol/globe_history_2026/releases and r
 
 ```bash
 python src/flights/evaluation/evaluation.py \
-  --adsb-src adsb.lol adsbx \
+  --adsb-src adsblol adsbx \
   --test-src algorithm adsbx opensky \
   --gold-src sfdps bts \
   --test-dates 2026-03-01

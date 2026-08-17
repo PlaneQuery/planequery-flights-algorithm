@@ -14,7 +14,7 @@ from data_engineering.flights.sfdps_to_flights import get_sfdps_flights_day
 from flights.flights_comparison import df_flights_comparision
 from flights.flights_match_adsb import ADSB_MATCHING_COLUMNS, get_matching_icaos_in_flights
 from flights_ai_model_airport.flights_ai_model_utils import AIRPORT_MODEL_ENDPOINTS
-from utils import angle_diff_deg, haversine, initial_bearing_deg, normalize_deg
+from flights.utils import angle_diff_deg, haversine, initial_bearing_deg, normalize_deg
 
 AIRPORT_RADIUS_KM = 150.0
 FEATURE_NAMES = [
